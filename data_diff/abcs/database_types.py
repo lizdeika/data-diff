@@ -164,7 +164,7 @@ class String_FixedAlphanum(String_Alphanum):
 
 
 @attrs.define(frozen=True)
-class Text(StringType):
+class Text(String_VaryingAlphanum):
     pass
 
 

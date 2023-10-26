@@ -268,10 +268,17 @@ class TableDiffer(ThreadBase, ABC):
         if len(table1.key_columns) != len(table2.key_columns):
             raise ValueError("Tables should have an equivalent number of key columns!")
 
+        # logger.info(table1.key_columns)
+        # logger.info(table2.key_columns)
+
         key_types1 = [table1._schema[i] for i in table1.key_columns]
         key_types2 = [table2._schema[i] for i in table2.key_columns]
 
+        # logger.info(key_types1 + key_types2)
+
         for kt in key_types1 + key_types2:
+            # logger.info(type(kt))
+            # logger.info(isinstance(kt, IKey))
             if not isinstance(kt, IKey):
                 raise NotImplementedError(f"Cannot use a column of type {kt} as a key")
 
