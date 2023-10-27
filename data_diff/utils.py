@@ -148,7 +148,21 @@ class ArithUUID(UUID, ArithString):
         return NotImplemented
 
 
+def number_to_utf8_to_bytes(n: int) -> str:
+    # print(f"number_to_utf8_to_bytes: {n}")
+    try:
+        return n.to_bytes((n.bit_length() + 7) // 8, "big").decode("cp850")
+    except UnicodeDecodeError as e:
+        print(f"UnicodeDecodeError: {n}")
+        raise e
+
+
+def utf8_to_number_from_bytes(s: str) -> int:
+    return int.from_bytes(s.encode("cp850"), "big")
+
+
 def numberToAlphanum(num: int, base: str = alphanums) -> str:
+    return number_to_utf8_to_bytes(num)
     digits = []
     while num > 0:
         num, remainder = divmod(num, len(base))
@@ -157,6 +171,7 @@ def numberToAlphanum(num: int, base: str = alphanums) -> str:
 
 
 def alphanumToNumber(alphanum: str, base: str = alphanums) -> int:
+    return utf8_to_number_from_bytes(alphanum)
     num = 0
     for c in alphanum:
         num = num * len(base) + base.index(c)
@@ -188,9 +203,9 @@ class ArithAlphanumeric(ArithString):
         if self._max_len and len(self._str) > self._max_len:
             raise ValueError(f"Length of alphanum value '{str}' is longer than the expected {self._max_len}")
 
-        for ch in self._str:
-            if ch not in alphanums:
-                raise ValueError(f"Unexpected character {ch} in alphanum string")
+        # for ch in self._str:
+        #     if ch not in alphanums:
+        #         raise ValueError(f"Unexpected character {ch} in alphanum string")
 
     # @property
     # def int(self):
