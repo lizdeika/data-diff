@@ -17,7 +17,7 @@ import contextvars
 import attrs
 from typing_extensions import Self
 
-from data_diff.abcs.compiler import AbstractCompiler
+from data_diff.abcs.compiler import AbstractCompiler, Compilable
 from data_diff.queries.extras import ApplyFuncAndNormalizeAsString, Checksum, NormalizeAsString
 from data_diff.utils import ArithString, is_uuid, join_iter, safezip
 from data_diff.queries.api import Expr, table, Select, SKIP, Explain, Code, this
@@ -48,7 +48,6 @@ from data_diff.queries.ast_classes import (
     TableAlias,
     TableOp,
     TablePath,
-    TimeTravel,
     TruncateTable,
     UnaryOp,
     WhenThen,
@@ -56,6 +55,8 @@ from data_diff.queries.ast_classes import (
 )
 from data_diff.abcs.database_types import (
     Array,
+    ColType_UUID,
+    FractionalType,
     Struct,
     ColType,
     Integer,
@@ -73,13 +74,6 @@ from data_diff.abcs.database_types import (
     DbPath,
     Boolean,
     JSON,
-)
-from data_diff.abcs.mixins import AbstractMixin_TimeTravel, Compilable
-from data_diff.abcs.mixins import (
-    AbstractMixin_Schema,
-    AbstractMixin_RandomSample,
-    AbstractMixin_NormalizeValue,
-    AbstractMixin_OptimizerHints,
 )
 
 logger = logging.getLogger("database")
@@ -202,39 +196,6 @@ def apply_query(callback: Callable[[str], Any], sql_code: Union[str, ThreadLocal
 
 
 @attrs.define(frozen=False)
-class Mixin_Schema(AbstractMixin_Schema):
-    def table_information(self) -> Compilable:
-        return table("information_schema", "tables")
-
-    def list_tables(self, table_schema: str, like: Compilable = None) -> Compilable:
-        return (
-            self.table_information()
-            .where(
-                this.table_schema == table_schema,
-                this.table_name.like(like) if like is not None else SKIP,
-                this.table_type == "BASE TABLE",
-            )
-            .select(this.table_name)
-        )
-
-
-@attrs.define(frozen=False)
-class Mixin_RandomSample(AbstractMixin_RandomSample):
-    def random_sample_n(self, tbl: ITable, size: int) -> ITable:
-        # TODO use a more efficient algorithm, when the table count is known
-        return tbl.order_by(Random()).limit(size)
-
-    def random_sample_ratio_approx(self, tbl: ITable, ratio: float) -> ITable:
-        return tbl.where(Random() < ratio)
-
-
-@attrs.define(frozen=False)
-class Mixin_OptimizerHints(AbstractMixin_OptimizerHints):
-    def optimizer_hints(self, hints: str) -> str:
-        return f"/*+ {hints} */ "
-
-
-@attrs.define(frozen=False)
 class BaseDialect(abc.ABC):
     SUPPORTS_PRIMARY_KEY: ClassVar[bool] = False
     SUPPORTS_INDEXES: ClassVar[bool] = False
@@ -338,8 +299,6 @@ class BaseDialect(abc.ABC):
             return self.render_explain(c, elem)
         elif isinstance(elem, CurrentTimestamp):
             return self.render_currenttimestamp(c, elem)
-        elif isinstance(elem, TimeTravel):
-            return self.render_timetravel(c, elem)
         elif isinstance(elem, CreateTable):
             return self.render_createtable(c, elem)
         elif isinstance(elem, DropTable):
@@ -616,16 +575,6 @@ class BaseDialect(abc.ABC):
     def render_currenttimestamp(self, c: Compiler, elem: CurrentTimestamp) -> str:
         return self.current_timestamp()
 
-    def render_timetravel(self, c: Compiler, elem: TimeTravel) -> str:
-        assert isinstance(c, AbstractMixin_TimeTravel)
-        return self.compile(
-            c,
-            # TODO: why is it c.? why not self? time-trvelling is the dialect's thing, isnt't it?
-            c.time_travel(
-                elem.table, before=elem.before, timestamp=elem.timestamp, offset=elem.offset, statement=elem.statement
-            ),
-        )
-
     def render_createtable(self, c: Compiler, elem: CreateTable) -> str:
         ne = "IF NOT EXISTS " if elem.if_not_exists else ""
         if elem.source_table:
@@ -813,6 +762,98 @@ class BaseDialect(abc.ABC):
     def set_timezone_to_utc(self) -> str:
         "Provide SQL for setting the session timezone to UTC"
 
+    @abstractmethod
+    def md5_as_int(self, s: str) -> str:
+        "Provide SQL for computing md5 and returning an int"
+
+    @abstractmethod
+    def normalize_timestamp(self, value: str, coltype: TemporalType) -> str:
+        """Creates an SQL expression, that converts 'value' to a normalized timestamp.
+
+        The returned expression must accept any SQL datetime/timestamp, and return a string.
+
+        Date format: ``YYYY-MM-DD HH:mm:SS.FFFFFF``
+
+        Precision of dates should be rounded up/down according to coltype.rounds
+        """
+
+    @abstractmethod
+    def normalize_number(self, value: str, coltype: FractionalType) -> str:
+        """Creates an SQL expression, that converts 'value' to a normalized number.
+
+        The returned expression must accept any SQL int/numeric/float, and return a string.
+
+        Floats/Decimals are expected in the format
+        "I.P"
+
+        Where I is the integer part of the number (as many digits as necessary),
+        and must be at least one digit (0).
+        P is the fractional digits, the amount of which is specified with
+        coltype.precision. Trailing zeroes may be necessary.
+        If P is 0, the dot is omitted.
+
+        Note: We use 'precision' differently than most databases. For decimals,
+        it's the same as ``numeric_scale``, and for floats, who use binary precision,
+        it can be calculated as ``log10(2**numeric_precision)``.
+        """
+
+    def normalize_boolean(self, value: str, _coltype: Boolean) -> str:
+        """Creates an SQL expression, that converts 'value' to either '0' or '1'."""
+        return self.to_string(value)
+
+    def normalize_uuid(self, value: str, coltype: ColType_UUID) -> str:
+        """Creates an SQL expression, that strips uuids of artifacts like whitespace."""
+        if isinstance(coltype, String_UUID):
+            return f"TRIM({value})"
+        return self.to_string(value)
+
+    def normalize_json(self, value: str, _coltype: JSON) -> str:
+        """Creates an SQL expression, that converts 'value' to its minified json string representation."""
+        return self.to_string(value)
+
+    def normalize_array(self, value: str, _coltype: Array) -> str:
+        """Creates an SQL expression, that serialized an array into a JSON string."""
+        return self.to_string(value)
+
+    def normalize_struct(self, value: str, _coltype: Struct) -> str:
+        """Creates an SQL expression, that serialized a typed struct into a JSON string."""
+        return self.to_string(value)
+
+    def normalize_value_by_type(self, value: str, coltype: ColType) -> str:
+        """Creates an SQL expression, that converts 'value' to a normalized representation.
+
+        The returned expression must accept any SQL value, and return a string.
+
+        The default implementation dispatches to a method according to `coltype`:
+
+        ::
+
+            TemporalType    -> normalize_timestamp()
+            FractionalType  -> normalize_number()
+            *else*          -> to_string()
+
+            (`Integer` falls in the *else* category)
+
+        """
+        if isinstance(coltype, TemporalType):
+            return self.normalize_timestamp(value, coltype)
+        elif isinstance(coltype, FractionalType):
+            return self.normalize_number(value, coltype)
+        elif isinstance(coltype, ColType_UUID):
+            return self.normalize_uuid(value, coltype)
+        elif isinstance(coltype, Boolean):
+            return self.normalize_boolean(value, coltype)
+        elif isinstance(coltype, JSON):
+            return self.normalize_json(value, coltype)
+        elif isinstance(coltype, Array):
+            return self.normalize_array(value, coltype)
+        elif isinstance(coltype, Struct):
+            return self.normalize_struct(value, coltype)
+        return self.to_string(value)
+
+    def optimizer_hints(self, hints: str) -> str:
+        return f"/*+ {hints} */ "
+
 
 T = TypeVar("T", bound=BaseDialect)
 
@@ -996,7 +1037,9 @@ class Database(abc.ABC):
         # Return a dict of form {name: type} after normalization
         return col_dict
 
-    def _refine_coltypes(self, table_path: DbPath, col_dict: Dict[str, ColType], where: str = None, sample_size=64):
+    def _refine_coltypes(
+        self, table_path: DbPath, col_dict: Dict[str, ColType], where: Optional[str] = None, sample_size=64
+    ):
         """Refine the types in the column dict, by querying the database for a sample of their values
 
         'where' restricts the rows to be sampled.
@@ -1006,10 +1049,7 @@ class Database(abc.ABC):
         if not text_columns:
             return
 
-        if isinstance(self.dialect, AbstractMixin_NormalizeValue):
-            fields = [Code(self.dialect.normalize_uuid(self.dialect.quote(c), String_UUID())) for c in text_columns]
-        else:
-            fields = this[text_columns]
+        fields = [Code(self.dialect.normalize_uuid(self.dialect.quote(c), String_UUID())) for c in text_columns]
 
         samples_by_row = self.query(
             table(*table_path).select(*fields).where(Code(where) if where else SKIP).limit(sample_size), list
@@ -1043,10 +1083,6 @@ class Database(abc.ABC):
                         assert col_name in col_dict
                         col_dict[col_name] = String_VaryingAlphanum()
 
-    # @lru_cache()
-    # def get_table_schema(self, path: DbPath) -> Dict[str, ColType]:
-    #     return self.query_table_schema(path)
-
     def _normalize_table_path(self, path: DbPath) -> DbPath:
         if len(path) == 1:
             return self.default_schema, path[0]
@@ -1079,9 +1115,6 @@ class Database(abc.ABC):
         "Close connection(s) to the database instance. Querying will stop functioning."
         self.is_closed = True
         return super().close()
-
-    def list_tables(self, tables_like, schema=None):
-        return self.query(self.dialect.list_tables(schema or self.default_schema, tables_like))
 
     @property
     @abstractmethod
