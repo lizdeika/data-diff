@@ -32,6 +32,9 @@ def split_key_space(min_key: DbKey, max_key: DbKey, count: int) -> List[DbKey]:
     else:
         checkpoints = split_space(min_key, max_key, count)
 
+    logger.info("Splitting key space: %s -> %s, count=%s", min_key, max_key, count)
+    logger.info("Checkpoints: %s", checkpoints)
+
     assert all(min_key < x < max_key for x in checkpoints)
     return [min_key] + checkpoints + [max_key]
 
@@ -258,7 +261,7 @@ class TableSegment:
             raise ValueError("Table appears to be empty")
 
         # Min/max keys are interleaved
-        print(result)
+        logger.info("Querying result: %s", result)
         min_key, max_key = result[::2], result[1::2]
         assert len(min_key) == len(max_key)
 
