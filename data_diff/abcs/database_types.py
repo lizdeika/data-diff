@@ -164,10 +164,8 @@ class String_FixedAlphanum(String_Alphanum):
 
 
 @attrs.define(frozen=True)
-class Text(StringType):
-    @property
-    def supported(self) -> bool:
-        return False
+class Text(String_VaryingAlphanum):
+    pass
 
 
 # In majority of DBMSes, it is called JSON/JSONB. Only in Snowflake, it is OBJECT.

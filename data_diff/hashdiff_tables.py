@@ -165,6 +165,8 @@ class HashDiffer(TableDiffer):
         assert not info_tree.info.rowcounts
         info_tree.info.rowcounts = {1: count1, 2: count2}
 
+        logger.info("count1=%s, count2=%s, checksum1=%s, checksum2=%s", count1, count2, checksum1, checksum2)
+
         if count1 == 0 and count2 == 0:
             logger.debug(
                 "Uneven distribution of keys detected in segment %s..%s (big gaps in the key column). "
